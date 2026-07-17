@@ -64,6 +64,46 @@ affects the other tenants or crashes the process.
 
 See [`.env.example`](.env.example) for the full list of variables.
 
+## Runtime overrides via Redis
+
+The env-var trail settings are **defaults**. Each tenant's trail type, value,
+and an on/off toggle can be overridden at runtime — without a redeploy — by
+writing to a per-tenant Redis hash at `bot:config:<address>` (address
+lowercased, matching the state key). The engine reads it every loop and merges
+it over the configured defaults:
+
+| Field     | Values                              | Effect                                                    |
+| --------- | ----------------------------------- | -------------------------------------------------------- |
+| `type`    | `pct` \| `abs`                      | Overrides the trail type.                                 |
+| `value`   | positive number                     | Overrides the trail distance.                            |
+| `enabled` | `true`/`false` (`1`/`0`, `on`/`off`) | Turns trailing on/off for the tenant (default `true`).   |
+
+Any field left unset falls back to the env default. Only fields that are set
+are overridden, so you can flip a single value while leaving the rest on the
+configured defaults. If an override is malformed (bad enum, non-positive
+value, or a `pct` value ≥ 1 after merging), it is ignored with a logged
+warning and the configured default is used instead.
+
+```bash
+# Trail 1% instead of the configured default
+redis-cli hset bot:config:0xabc... type pct value 0.01
+
+# Turn the trail OFF for this tenant (resting stop is canceled while a
+# position is open)
+redis-cli hset bot:config:0xabc... enabled false
+
+# Turn it back ON (a fresh stop is created for the open position)
+redis-cli hset bot:config:0xabc... enabled true
+
+# Drop all overrides and revert entirely to env defaults
+redis-cli del bot:config:0xabc...
+```
+
+**Toggle behavior with an open position:** setting `enabled=false` cancels the
+tenant's resting stop on the next loop, and setting it back to `enabled=true`
+recreates a stop from the current price (and then resumes tightening). Toggling
+has no exchange effect while flat — there is simply no stop to add or remove.
+
 ## Agent wallet setup (safety model)
 
 Hyperworker signs every exchange action with a Hyperliquid **API/agent
@@ -173,7 +213,7 @@ protection must survive restarts and deploys.
     "price": 97234.5,
     "position": { "side": "long", "size": 0.1, "entryPx": 95000.0 },
     "stop": { "triggerPx": 95289.6, "orderId": 12345 },
-    "trail": { "type": "abs", "value": 500 },
+    "trail": { "type": "abs", "value": 500, "enabled": true },
     "lastAction": "moved stop 95100 -> 95289.6",
     "updatedAt": "2026-07-17T10:31:02Z"
   }

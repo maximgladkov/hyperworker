@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Redis } from "ioredis";
-import type { AppConfig } from "./config.js";
+import { type AppConfig, parseTrailOverride, type TrailOverride } from "./config.js";
 import { logger } from "./logger.js";
 import type { TenantState } from "./state.js";
 
@@ -8,6 +8,7 @@ const LOCK_KEY = "bot:lock";
 const LOCK_TTL_MS = 30_000;
 const TENANTS_KEY = "bot:tenants";
 const UPDATES_CHANNEL = "bot:updates";
+const CONFIG_KEY_PREFIX = "bot:config:";
 
 function fingerprint(state: TenantState): string {
   const { updatedAt: _updatedAt, ...rest } = state;
@@ -43,6 +44,11 @@ export class RedisCoordinator {
     if (current === this.lockId) {
       await this.redis.del(LOCK_KEY);
     }
+  }
+
+  async getTenantConfig(address: string): Promise<TrailOverride> {
+    const raw = await this.redis.hgetall(`${CONFIG_KEY_PREFIX}${address}`);
+    return parseTrailOverride(raw);
   }
 
   async publishState(state: TenantState): Promise<void> {

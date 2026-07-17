@@ -7,6 +7,12 @@ export interface TrailConfig {
   value: number;
 }
 
+export interface TrailOverride {
+  type?: TrailType;
+  value?: number;
+  enabled?: boolean;
+}
+
 export interface Tenant {
   address: `0x${string}`;
   agentKey: `0x${string}`;
@@ -31,6 +37,38 @@ const privateKeySchema = z
   .regex(/^0x[0-9a-fA-F]{64}$/, "must be a 0x-prefixed 64-hex-character private key");
 
 const trailTypeSchema = z.enum(["pct", "abs"]);
+
+export function isValidTrail(trail: TrailConfig): boolean {
+  if (!Number.isFinite(trail.value) || trail.value <= 0) return false;
+  if (trail.type === "pct" && trail.value >= 1) return false;
+  return true;
+}
+
+function parseBool(raw: string): boolean | undefined {
+  const value = raw.trim().toLowerCase();
+  if (["true", "1", "on", "yes"].includes(value)) return true;
+  if (["false", "0", "off", "no"].includes(value)) return false;
+  return undefined;
+}
+
+export function parseTrailOverride(raw: Record<string, string>): TrailOverride {
+  const override: TrailOverride = {};
+
+  const type = trailTypeSchema.safeParse(raw.type);
+  if (type.success) override.type = type.data;
+
+  if (raw.value !== undefined && raw.value.trim() !== "") {
+    const value = Number(raw.value);
+    if (Number.isFinite(value) && value > 0) override.value = value;
+  }
+
+  if (raw.enabled !== undefined && raw.enabled.trim() !== "") {
+    const enabled = parseBool(raw.enabled);
+    if (enabled !== undefined) override.enabled = enabled;
+  }
+
+  return override;
+}
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key];

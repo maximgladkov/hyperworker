@@ -1,4 +1,4 @@
-import type { Tenant } from "./config.js";
+import { isValidTrail, type Tenant, type TrailConfig } from "./config.js";
 import { HyperliquidClient, type Position, type RestingStop } from "./hyperliquid.js";
 import { tenantLogger, type Logger } from "./logger.js";
 import { alertError, alertPositionClosed, alertPositionOpened, alertStopMoved } from "./notify.js";
@@ -25,6 +25,30 @@ export class TenantEngine {
     this.log = tenantLogger(tenant.address);
   }
 
+  private async resolveTrail(): Promise<{ trail: TrailConfig; enabled: boolean }> {
+    const override = await this.redis.getTenantConfig(this.tenant.address);
+    const enabled = override.enabled ?? true;
+
+    if (override.type === undefined && override.value === undefined) {
+      return { trail: this.tenant.trail, enabled };
+    }
+
+    const merged: TrailConfig = {
+      type: override.type ?? this.tenant.trail.type,
+      value: override.value ?? this.tenant.trail.value,
+    };
+
+    if (!isValidTrail(merged)) {
+      this.log.warn(
+        { override, fallback: this.tenant.trail },
+        "invalid trail override in redis; falling back to configured default",
+      );
+      return { trail: this.tenant.trail, enabled };
+    }
+
+    return { trail: merged, enabled };
+  }
+
   async reconcile(): Promise<void> {
     const position = await this.hl.getPosition(this.tenant.address);
     this.hadPosition = position !== null;
@@ -40,6 +64,19 @@ export class TenantEngine {
       return;
     }
 
+    const { trail, enabled } = await this.resolveTrail();
+
+    if (!enabled) {
+      const resting = await this.hl.getAnyRestingStop(this.tenant.address);
+      if (resting) {
+        await this.hl.cancelOrder(this.tenant, resting.orderId);
+        this.log.warn({ orderId: resting.orderId }, "startup: trail disabled, canceled resting stop-loss");
+      } else {
+        this.log.info("startup: trail disabled, no stop to cancel");
+      }
+      return;
+    }
+
     const resting = await this.hl.getRestingStop(this.tenant.address, position.side);
     if (resting) {
       this.log.info(
@@ -50,7 +87,7 @@ export class TenantEngine {
     }
 
     const price = await this.hl.getMidPrice();
-    const stopPx = candidateStop(position.side, price, this.tenant.trail);
+    const stopPx = candidateStop(position.side, price, trail);
     const orderId = await this.hl.placeStop(this.tenant, position.side, position.size, stopPx);
     this.log.warn({ orderId, triggerPx: stopPx }, "startup: created missing stop-loss for open position");
   }
@@ -58,10 +95,11 @@ export class TenantEngine {
   async run(price: number): Promise<void> {
     try {
       const position = await this.hl.getPosition(this.tenant.address);
+      const { trail, enabled } = await this.resolveTrail();
       if (!position) {
-        await this.runFlat(price);
+        await this.runFlat(price, trail, enabled);
       } else {
-        await this.runOpen(price, position);
+        await this.runOpen(price, position, trail, enabled);
       }
     } catch (error) {
       alertError(this.log, error);
@@ -69,7 +107,7 @@ export class TenantEngine {
     }
   }
 
-  private async runFlat(price: number): Promise<void> {
+  private async runFlat(price: number, trail: TrailConfig, enabled: boolean): Promise<void> {
     let lastAction = "idle: no open position";
 
     const stray = await this.hl.getAnyRestingStop(this.tenant.address);
@@ -84,16 +122,33 @@ export class TenantEngine {
     }
     this.hadPosition = false;
 
-    await this.publish(price, null, null, lastAction);
+    await this.publish(price, null, null, lastAction, trail, enabled);
   }
 
-  private async runOpen(price: number, position: Position): Promise<void> {
+  private async runOpen(
+    price: number,
+    position: Position,
+    trail: TrailConfig,
+    enabled: boolean,
+  ): Promise<void> {
     if (!this.hadPosition) {
       alertPositionOpened(this.log, position.side, position.size);
     }
     this.hadPosition = true;
 
-    const candidate = candidateStop(position.side, price, this.tenant.trail);
+    if (!enabled) {
+      let lastAction = "holding: trail disabled";
+      const resting = await this.hl.getAnyRestingStop(this.tenant.address);
+      if (resting) {
+        await this.hl.cancelOrder(this.tenant, resting.orderId);
+        lastAction = `trail disabled: canceled stop ${resting.orderId}`;
+        this.log.warn({ orderId: resting.orderId }, lastAction);
+      }
+      await this.publish(price, position, null, lastAction, trail, enabled);
+      return;
+    }
+
+    const candidate = candidateStop(position.side, price, trail);
     let resting = await this.hl.getRestingStop(this.tenant.address, position.side);
     let lastAction = "holding: stop unchanged";
 
@@ -119,7 +174,7 @@ export class TenantEngine {
       }
     }
 
-    await this.publish(price, position, resting, lastAction);
+    await this.publish(price, position, resting, lastAction, trail, enabled);
   }
 
   private async publish(
@@ -127,6 +182,8 @@ export class TenantEngine {
     position: Position | null,
     stop: RestingStop | null,
     lastAction: string,
+    trail: TrailConfig,
+    enabled: boolean,
   ): Promise<void> {
     const state: TenantState = {
       address: this.tenant.address,
@@ -134,7 +191,7 @@ export class TenantEngine {
       price,
       position: position ? { side: position.side, size: position.size, entryPx: position.entryPx } : null,
       stop: stop ? { triggerPx: stop.triggerPx, orderId: stop.orderId } : null,
-      trail: { type: this.tenant.trail.type, value: this.tenant.trail.value },
+      trail: { type: trail.type, value: trail.value, enabled },
       lastAction,
       updatedAt: new Date().toISOString(),
     };

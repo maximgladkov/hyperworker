@@ -15,6 +15,7 @@ export interface StopState {
 export interface TrailState {
   type: TrailType;
   value: number;
+  enabled: boolean;
 }
 
 export interface TenantState {
