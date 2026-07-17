@@ -17,8 +17,7 @@ export interface AppConfig {
   coin: string;
   hlBase: string;
   pollMs: number;
-  upstashUrl: string;
-  upstashToken: string;
+  redisUrl: string;
   healthcheckUrl: string;
   tenants: Tenant[];
 }
@@ -136,11 +135,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error(`POLL_MS must be a number >= 250, got: ${pollMsRaw}`);
   }
 
-  const upstashUrl = requireEnv(env, "UPSTASH_REDIS_REST_URL");
-  const upstashToken = requireEnv(env, "UPSTASH_REDIS_REST_TOKEN");
+  const redisUrl = requireEnv(env, "REDIS_URL");
   const healthcheckUrl = requireEnv(env, "HEALTHCHECK_URL");
 
   const tenants = parseTenants(env);
 
-  return { coin, hlBase, pollMs, upstashUrl, upstashToken, healthcheckUrl, tenants };
+  return { coin, hlBase, pollMs, redisUrl, healthcheckUrl, tenants };
 }

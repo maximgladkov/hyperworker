@@ -105,6 +105,34 @@ trailing, and resizing all behave as expected before pointing at mainnet.
 Testnet and mainnet use entirely separate accounts/keys — a mainnet agent
 approval does not carry over to testnet, and vice versa.
 
+## Redis
+
+Hyperworker connects to a regular Redis server (not a REST-based service) via
+`REDIS_URL`, using the standard `redis://` protocol. Redis is used for:
+
+- the per-tenant state snapshots and `bot:updates` pub/sub channel consumed
+  by a UI (see [Observability](#observability)), and
+- the `bot:lock` singleton lock described below.
+
+Run it side by side with the app rather than as an external managed service:
+
+- **Locally:** `docker run -p 6379:6379 redis:7-alpine`, then
+  `REDIS_URL=redis://localhost:6379`.
+- **On Railway:** add Railway's official **Redis** template as a second
+  service in the same project as this app. Railway exposes that service's
+  connection string as `REDIS_URL` on the Redis service itself; reference it
+  from this app's service variables with
+  `REDIS_URL=${{Redis.REDIS_URL}}` (substitute the actual service name if
+  you rename it). Because both services live in the same Railway project,
+  the connection stays on Railway's private network — no public exposure or
+  extra egress needed.
+
+Redis connection errors are logged but never crash the process on their
+own — reconnection is handled by the Redis client. A lost lock renewal
+(e.g. because Redis was unreachable for longer than the lock TTL) causes the
+engine to exit for safety per the singleton constraint below, and Railway's
+restart policy brings it back up against a fresh lock.
+
 ## The singleton constraint
 
 This service **must run as exactly one instance at all times.** It uses
@@ -119,8 +147,8 @@ Two layers of protection:
    Never manually scale this service beyond 1 replica, and never run it as a
    second Railway service against the same accounts.
 2. **Redis-level (defense in depth):** on startup the process acquires a
-   short-TTL lock (`bot:lock`) in Upstash Redis and renews it every loop. If
-   a second instance starts (e.g. during a rolling deploy overlap) and can't
+   short-TTL lock (`bot:lock`) in Redis and renews it every loop. If a
+   second instance starts (e.g. during a rolling deploy overlap) and can't
    acquire the lock, it logs an error and exits immediately rather than
    racing the incumbent. If the active instance crashes without releasing
    the lock, it expires automatically after 30 seconds so a replacement can
@@ -133,8 +161,8 @@ protection must survive restarts and deploys.
 
 ## Observability
 
-- A JSON state snapshot is written to Upstash Redis at `bot:state:<address>`
-  every loop for each tenant, and the tenant's address is added to the
+- A JSON state snapshot is written to Redis at `bot:state:<address>` every
+  loop for each tenant, and the tenant's address is added to the
   `bot:tenants` set for discovery. On any change to a tenant's state, the
   snapshot is also published to the `bot:updates` channel.
 
@@ -163,19 +191,23 @@ protection must survive restarts and deploys.
 ## Local development
 
 ```bash
+docker run -d --name hyperworker-redis -p 6379:6379 redis:7-alpine
 cp .env.example .env
-# fill in .env with testnet credentials
+# fill in .env with testnet credentials (REDIS_URL=redis://localhost:6379 works out of the box)
 npm install
 npm run dev
 ```
 
 ## Deploying to Railway
 
-1. Push this repo to a Git provider Railway can access.
-2. Create a new Railway service from the repo — it will build from the
+1. In your Railway project, add Railway's **Redis** template as its own
+   service (New → Database → Redis, or "Deploy a Template" → Redis).
+2. Push this repo to a Git provider Railway can access, and create a second
+   service in the same project from that repo — it will build from the
    included `Dockerfile` and apply [`railway.json`](railway.json)
    (`numReplicas: 1`).
-3. Set all environment variables from `.env.example` in the Railway service
-   settings.
+3. Set all environment variables from `.env.example` on this app's service,
+   pointing `REDIS_URL` at the Redis service via a variable reference (e.g.
+   `REDIS_URL=${{Redis.REDIS_URL}}`).
 4. Deploy. Confirm in the logs that reconciliation ran successfully for
    every tenant before considering the deploy healthy.

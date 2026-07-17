@@ -18,6 +18,7 @@ async function main(): Promise<void> {
   const acquired = await redis.acquireLock();
   if (!acquired) {
     logger.error("another instance already holds bot:lock; refusing to start a second singleton");
+    await redis.close();
     process.exit(1);
     return;
   }
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
       if (!renewed) {
         logger.error("lost bot:lock ownership; another instance may now be active. Exiting for safety.");
         stopped = true;
+        await redis.close();
         process.exit(1);
         return;
       }
@@ -84,6 +86,7 @@ async function main(): Promise<void> {
     if (timer) clearTimeout(timer);
     await currentIteration.catch(() => {});
     await redis.releaseLock();
+    await redis.close();
     logger.info("released singleton lock, exiting");
     process.exit(0);
   };

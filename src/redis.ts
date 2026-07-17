@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Redis } from "@upstash/redis";
+import { Redis } from "ioredis";
 import type { AppConfig } from "./config.js";
+import { logger } from "./logger.js";
 import type { TenantState } from "./state.js";
 
 const LOCK_KEY = "bot:lock";
@@ -19,23 +20,26 @@ export class RedisCoordinator {
   private readonly lastFingerprint = new Map<string, string>();
 
   constructor(config: AppConfig) {
-    this.redis = new Redis({ url: config.upstashUrl, token: config.upstashToken });
+    this.redis = new Redis(config.redisUrl, { lazyConnect: false, maxRetriesPerRequest: 3 });
+    this.redis.on("error", (error) => {
+      logger.error({ err: error }, "redis connection error");
+    });
   }
 
   async acquireLock(): Promise<boolean> {
-    const result = await this.redis.set(LOCK_KEY, this.lockId, { nx: true, px: LOCK_TTL_MS });
+    const result = await this.redis.set(LOCK_KEY, this.lockId, "PX", LOCK_TTL_MS, "NX");
     return result === "OK";
   }
 
   async renewLock(): Promise<boolean> {
-    const current = await this.redis.get<string>(LOCK_KEY);
+    const current = await this.redis.get(LOCK_KEY);
     if (current !== this.lockId) return false;
-    await this.redis.set(LOCK_KEY, this.lockId, { xx: true, px: LOCK_TTL_MS });
+    await this.redis.set(LOCK_KEY, this.lockId, "PX", LOCK_TTL_MS, "XX");
     return true;
   }
 
   async releaseLock(): Promise<void> {
-    const current = await this.redis.get<string>(LOCK_KEY);
+    const current = await this.redis.get(LOCK_KEY);
     if (current === this.lockId) {
       await this.redis.del(LOCK_KEY);
     }
@@ -50,5 +54,9 @@ export class RedisCoordinator {
       await this.redis.publish(UPDATES_CHANNEL, JSON.stringify(state));
       this.lastFingerprint.set(state.address, nextFingerprint);
     }
+  }
+
+  async close(): Promise<void> {
+    await this.redis.quit();
   }
 }
