@@ -18,7 +18,7 @@ export interface AppConfig {
   hlBase: string;
   pollMs: number;
   redisUrl: string;
-  healthcheckUrl: string;
+  healthcheckUrl: string | undefined;
   tenants: Tenant[];
 }
 
@@ -136,7 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const redisUrl = requireEnv(env, "REDIS_URL");
-  const healthcheckUrl = requireEnv(env, "HEALTHCHECK_URL");
+  const healthcheckUrl = env.HEALTHCHECK_URL?.trim() || undefined;
 
   const tenants = parseTenants(env);
 

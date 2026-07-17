@@ -179,10 +179,11 @@ protection must survive restarts and deploys.
   }
   ```
 
-- `HEALTHCHECK_URL` (e.g. a [healthchecks.io](https://healthchecks.io) check)
-  is pinged once per loop — a dead-man's switch that fires if the process
-  hangs or crashes. Set the check's grace period to a few multiples of
-  `POLL_MS`.
+- `HEALTHCHECK_URL` (optional; e.g. a [healthchecks.io](https://healthchecks.io)
+  check) is pinged once per loop — a dead-man's switch that fires if the
+  process hangs or crashes. Set the check's grace period to a few multiples
+  of `POLL_MS`. If left unset, the heartbeat ping is skipped entirely (a
+  warning is logged once at startup).
 - Structured logs are emitted via `pino`, with every tenant's log lines
   bound to its account `address`.
 - Alerts (warn/error level logs) fire on: a stop being moved, any error, and

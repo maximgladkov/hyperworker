@@ -11,6 +11,9 @@ async function main(): Promise<void> {
     { coin: config.coin, hlBase: config.hlBase, pollMs: config.pollMs, tenantCount: config.tenants.length },
     "starting hyperworker",
   );
+  if (!config.healthcheckUrl) {
+    logger.warn("HEALTHCHECK_URL not set; skipping dead-man's switch heartbeat");
+  }
 
   const hl = new HyperliquidClient(config.hlBase, config.coin);
   const redis = new RedisCoordinator(config);
