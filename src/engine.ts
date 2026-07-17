@@ -12,9 +12,14 @@ function sizeDrifted(current: number, actual: number): boolean {
   return Math.abs(current - actual) > SIZE_DRIFT_EPSILON;
 }
 
+function trailChanged(a: TrailConfig | undefined, b: TrailConfig): boolean {
+  return a !== undefined && (a.type !== b.type || a.value !== b.value);
+}
+
 export class TenantEngine {
   private readonly log: Logger;
   private hadPosition = false;
+  private lastTrail: TrailConfig | undefined;
 
   constructor(
     private readonly hl: HyperliquidClient,
@@ -121,6 +126,7 @@ export class TenantEngine {
       alertPositionClosed(this.log);
     }
     this.hadPosition = false;
+    this.lastTrail = undefined;
 
     await this.publish(price, null, null, lastAction, trail, enabled);
   }
@@ -144,11 +150,13 @@ export class TenantEngine {
         lastAction = `trail disabled: canceled stop ${resting.orderId}`;
         this.log.warn({ orderId: resting.orderId }, lastAction);
       }
+      this.lastTrail = undefined;
       await this.publish(price, position, null, lastAction, trail, enabled);
       return;
     }
 
     const candidate = candidateStop(position.side, price, trail);
+    const reconfigured = trailChanged(this.lastTrail, trail);
     let resting = await this.hl.getRestingStop(this.tenant.address, position.side);
     let lastAction = "holding: stop unchanged";
 
@@ -165,15 +173,22 @@ export class TenantEngine {
         resting = { ...resting, size: position.size };
       }
 
-      if (isTighter(position.side, candidate, resting.triggerPx)) {
+      const shouldMove = reconfigured
+        ? candidate !== resting.triggerPx
+        : isTighter(position.side, candidate, resting.triggerPx);
+
+      if (shouldMove) {
         const from = resting.triggerPx;
         await this.hl.modifyStop(this.tenant, position.side, resting.orderId, position.size, candidate);
-        lastAction = `moved stop ${from} -> ${candidate}`;
+        lastAction = reconfigured
+          ? `reconfigured stop ${from} -> ${candidate}`
+          : `moved stop ${from} -> ${candidate}`;
         alertStopMoved(this.log, from, candidate);
         resting = { ...resting, triggerPx: candidate };
       }
     }
 
+    this.lastTrail = trail;
     await this.publish(price, position, resting, lastAction, trail, enabled);
   }
 

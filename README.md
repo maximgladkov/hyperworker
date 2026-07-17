@@ -21,8 +21,10 @@ its own and can be restarted at any time without risk.
 - If the trailing distance implies a tighter stop than what is currently
   resting, the engine moves it with `modify` — the order ID never changes and
   the position is never left unprotected.
-- The stop is **never loosened**. The only allowed failure mode is "the stop
-  stops moving"; a stale-but-present stop is always safer than no stop.
+- The stop is **never loosened** by automatic trailing. The only allowed
+  failure mode is "the stop stops moving"; a stale-but-present stop is always
+  safer than no stop. (A deliberate `type`/`value` change via Redis is the one
+  exception — see [Runtime overrides via Redis](#runtime-overrides-via-redis).)
 - On startup (or after any redeploy/crash), the engine reconciles from
   scratch: an open position with no resting stop gets one created
   immediately; an existing stop is adopted by its order ID and trailing
@@ -103,6 +105,14 @@ redis-cli del bot:config:0xabc...
 tenant's resting stop on the next loop, and setting it back to `enabled=true`
 recreates a stop from the current price (and then resumes tightening). Toggling
 has no exchange effect while flat — there is simply no stop to add or remove.
+
+**Changing `type` / `value` with an open position:** a change to the trail
+distance is treated as a deliberate instruction and is applied on the next loop
+even if it *loosens* the stop (moves it further from price). This is the one
+exception to the "never loosen" rule, which otherwise governs automatic
+price-driven trailing: once a reconfigured stop is in place, ordinary trailing
+resumes and only ever tightens from there. If you change the value while flat,
+it simply takes effect when the next position opens.
 
 ## Agent wallet setup (safety model)
 
