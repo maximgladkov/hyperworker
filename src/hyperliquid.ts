@@ -23,6 +23,18 @@ export interface RestingStop {
   size: number;
 }
 
+export interface OpenOrder {
+  oid: number;
+  side: "buy" | "sell";
+  size: number;
+  limitPx: number;
+  reduceOnly: boolean;
+  isTrigger: boolean;
+  orderType: string;
+  triggerPx?: number;
+  timestamp: number;
+}
+
 export interface OrderResult {
   status: "filled" | "resting";
   oid: number;
@@ -125,6 +137,23 @@ export class HyperliquidClient {
       size: Math.abs(szi),
       entryPx: Number(entry.position.entryPx),
     };
+  }
+
+  async getOpenOrders(address: `0x${string}`): Promise<OpenOrder[]> {
+    const orders = await this.info.frontendOpenOrders({ user: address });
+    return orders
+      .filter((order) => order.coin === this.coin)
+      .map((order) => ({
+        oid: order.oid,
+        side: order.side === "B" ? "buy" : "sell",
+        size: Number(order.sz),
+        limitPx: Number(order.limitPx),
+        reduceOnly: Boolean(order.reduceOnly),
+        isTrigger: Boolean(order.isTrigger),
+        orderType: order.orderType,
+        triggerPx: order.isTrigger ? Number(order.triggerPx) : undefined,
+        timestamp: order.timestamp,
+      }));
   }
 
   async getRestingStop(address: `0x${string}`, positionSide: PositionSide): Promise<RestingStop | null> {

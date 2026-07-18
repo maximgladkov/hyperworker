@@ -140,6 +140,8 @@ mid-flight with the engine's stop `modify`.
 | ------ | -------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
 | `GET`  | `/health`                        | —                                                | Liveness check (no auth).                                         |
 | `POST` | `/api/tenants/:address/order`    | `{ "side": "buy"\|"sell", "size": <coin units>, "price": <number?>, "reduceOnly": <bool?> }` | `price` set → resting GTC limit at that price; `price` empty → market IOC at the live mid. `reduceOnly:false` opens/adds; `reduceOnly:true` reduces. |
+| `GET`  | `/api/tenants/:address/orders`   | —                                                | Lists the tenant's open (resting) orders for `COIN`, including any trailing stop, with their order IDs. |
+| `POST` | `/api/tenants/:address/cancel`   | `{ "oid": <order id> }`                          | Cancels a single open order by its order ID. |
 | `POST` | `/api/tenants/:address/close`    | —                                                | Flattens the tenant's open position (full-size reduce-only market). |
 
 `:address` is the tenant's **master account address** (as configured in
@@ -147,6 +149,17 @@ mid-flight with the engine's stop `modify`.
 wallet to sign. `size` is in coin units (e.g. `0.01` BTC). `side` chooses
 direction: `buy` = long, `sell` = short. `price` is optional — omit it (or send
 `null`/`""`) to trade at the current market price, or set it for a limit order.
+
+Use `GET /api/tenants/:address/orders` to list the tenant's resting orders (e.g.
+an unfilled limit order) and read their `oid`, then `POST
+/api/tenants/:address/cancel` with that `oid` to cancel one. Cancels are
+serialized with the engine's stop `modify` per tenant, exactly like order
+placement. Note that cancelling the engine's own trailing stop while a position
+is open only removes it until the **next poll** (within `POLL_MS`), when the
+engine notices the position is unprotected and recreates the stop from the
+current price; to keep a stop off, disable trailing for the tenant via the Redis
+`enabled=false` override instead (see
+[Runtime overrides via Redis](#runtime-overrides-via-redis)).
 
 ```bash
 # Market buy: 0.01 BTC long at the current price (no price field)
@@ -166,6 +179,16 @@ curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
   -H 'authorization: Bearer <API_AUTH_TOKEN>' \
   -H 'content-type: application/json' \
   -d '{"side":"sell","size":0.01}'
+
+# List open (resting) orders and their order IDs
+curl http://localhost:8080/api/tenants/0xabc.../orders \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>'
+
+# Cancel a single open order by its order ID
+curl -X POST http://localhost:8080/api/tenants/0xabc.../cancel \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"oid":123456789}'
 
 # Flatten the position (always market)
 curl -X POST http://localhost:8080/api/tenants/0xabc.../close \

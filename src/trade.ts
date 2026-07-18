@@ -1,5 +1,5 @@
 import type { Tenant } from "./config.js";
-import type { HyperliquidClient, OrderResult } from "./hyperliquid.js";
+import type { HyperliquidClient, OpenOrder, OrderResult } from "./hyperliquid.js";
 import { logger } from "./logger.js";
 
 export type OrderSide = "buy" | "sell";
@@ -15,6 +15,11 @@ export interface CloseResult {
   closed: boolean;
   reason?: string;
   order?: OrderResult;
+}
+
+export interface CancelResult {
+  canceled: boolean;
+  oid: number;
 }
 
 class Mutex {
@@ -95,6 +100,23 @@ export class TradeService {
       });
       log.warn({ result }, "manual market order submitted");
       return result;
+    });
+  }
+
+  async listOrders(address: string): Promise<OpenOrder[]> {
+    const { tenant, lock } = this.resolve(address);
+    return lock.run(() => this.hl.getOpenOrders(tenant.address));
+  }
+
+  async cancelOrder(address: string, oid: number): Promise<CancelResult> {
+    const { tenant, lock } = this.resolve(address);
+
+    return lock.run(async () => {
+      const log = logger.child({ address: tenant.address });
+      log.warn({ oid }, "manual order cancel requested");
+      await this.hl.cancelOrder(tenant, oid);
+      log.warn({ oid }, "manual order cancel submitted");
+      return { canceled: true, oid };
     });
   }
 

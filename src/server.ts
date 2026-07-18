@@ -22,6 +22,10 @@ const orderBodySchema = z.object({
   price: optionalPrice,
 });
 
+const cancelBodySchema = z.object({
+  oid: z.number().int().positive(),
+});
+
 export function startServer(config: AppConfig, trade: TradeService): ServerType {
   const app = new Hono();
 
@@ -57,6 +61,38 @@ export function startServer(config: AppConfig, trade: TradeService): ServerType 
     try {
       const result = await trade.placeOrder(address, parsed.data);
       return c.json({ ok: true, order: result });
+    } catch (error) {
+      return handleTradeError(c, error, address);
+    }
+  });
+
+  app.get("/api/tenants/:address/orders", async (c) => {
+    const address = c.req.param("address");
+    try {
+      const orders = await trade.listOrders(address);
+      return c.json({ ok: true, orders });
+    } catch (error) {
+      return handleTradeError(c, error, address);
+    }
+  });
+
+  app.post("/api/tenants/:address/cancel", async (c) => {
+    const address = c.req.param("address");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const parsed = cancelBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid request", details: parsed.error.issues }, 400);
+    }
+
+    try {
+      const result = await trade.cancelOrder(address, parsed.data.oid);
+      return c.json({ ok: true, ...result });
     } catch (error) {
       return handleTradeError(c, error, address);
     }
