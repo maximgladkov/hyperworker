@@ -5,7 +5,7 @@ import { alertError, alertPositionClosed, alertPositionOpened, alertStopMoved } 
 import { notifyPositionClosed, notifyPositionModified, notifyPositionOpened } from "./push.js";
 import { RedisCoordinator } from "./redis.js";
 import type { TenantState } from "./state.js";
-import { candidateStop, isTighter } from "./trail.js";
+import { candidateStop, isTighter, reconfiguredStop } from "./trail.js";
 
 const SIZE_DRIFT_EPSILON = 1e-8;
 
@@ -223,18 +223,22 @@ export class TenantEngine {
         resting = { ...resting, size: position.size };
       }
 
+      const target =
+        reconfigured && this.lastTrail
+          ? reconfiguredStop(position.side, resting.triggerPx, this.lastTrail, trail, price)
+          : candidate;
       const shouldMove = reconfigured
-        ? candidate !== resting.triggerPx
-        : isTighter(position.side, candidate, resting.triggerPx);
+        ? target !== resting.triggerPx
+        : isTighter(position.side, target, resting.triggerPx);
 
       if (shouldMove) {
         const from = resting.triggerPx;
-        await this.hl.modifyStop(this.tenant, position.side, resting.orderId, position.size, candidate);
+        await this.hl.modifyStop(this.tenant, position.side, resting.orderId, position.size, target);
         lastAction = reconfigured
-          ? `reconfigured stop ${from} -> ${candidate}`
-          : `moved stop ${from} -> ${candidate}`;
-        alertStopMoved(this.log, from, candidate);
-        resting = { ...resting, triggerPx: candidate };
+          ? `reconfigured stop ${from} -> ${target}`
+          : `moved stop ${from} -> ${target}`;
+        alertStopMoved(this.log, from, target);
+        resting = { ...resting, triggerPx: target };
       }
     }
 
