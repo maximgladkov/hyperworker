@@ -36,6 +36,8 @@ export async function notifyPositionClosed(
   address: string,
   coin: string,
   side: PositionSide,
+  size: number,
+  exitPrice: number,
   pnl: number,
 ): Promise<void> {
   if (!configured) return;
@@ -44,9 +46,12 @@ export async function notifyPositionClosed(
   const endpoints = Object.entries(subs);
   if (endpoints.length === 0) return;
 
+  const priceFmt = exitPrice.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const pnlFmt = `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
   const payload = JSON.stringify({
-    title: `${coin} position closed`,
-    body: `${side === "long" ? "Long" : "Short"} closed · PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
+    title: `${side.toUpperCase()} CLOSED`,
+    body: `${size} ${coin} @ $${priceFmt} (${pnlFmt})`,
     url: "/",
     tag: `${address}:${coin}:close`,
   });

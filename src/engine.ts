@@ -135,7 +135,16 @@ export class TenantEngine {
       const closed = this.lastPosition;
       if (closed) {
         const pnl = estimatePnl(closed, price);
-        await notifyPositionClosed(this.redis, this.log, this.tenant.address, this.coin, closed.side, pnl);
+        await notifyPositionClosed(
+          this.redis,
+          this.log,
+          this.tenant.address,
+          this.coin,
+          closed.side,
+          closed.size,
+          price,
+          pnl,
+        );
       }
     }
     this.hadPosition = false;
