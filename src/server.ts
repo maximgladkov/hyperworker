@@ -6,10 +6,20 @@ import type { AppConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { type TradeService, UnknownTenantError } from "./trade.js";
 
+const optionalPrice = z.preprocess((value) => {
+  if (value === "" || value === null || value === undefined) return undefined;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? value : parsed;
+  }
+  return value;
+}, z.number().finite().positive().optional());
+
 const orderBodySchema = z.object({
   side: z.enum(["buy", "sell"]),
   size: z.number().finite().positive(),
   reduceOnly: z.boolean().optional(),
+  price: optionalPrice,
 });
 
 export function startServer(config: AppConfig, trade: TradeService): ServerType {

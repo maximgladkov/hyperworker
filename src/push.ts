@@ -11,14 +11,14 @@ export function initPush(): boolean {
   const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
 
   if (!subject || !publicKey || !privateKey) {
-    logger.warn("VAPID keys not fully configured; position-closed push notifications disabled");
+    logger.warn("VAPID keys not fully configured; position push notifications disabled");
     configured = false;
     return false;
   }
 
   webpush.setVapidDetails(subject, publicKey, privateKey);
   configured = true;
-  logger.info("web-push configured; position-closed notifications enabled");
+  logger.info("web-push configured; position open/modify/close notifications enabled");
   return true;
 }
 
@@ -30,31 +30,21 @@ function statusCodeOf(error: unknown): number | undefined {
   return undefined;
 }
 
-export async function notifyPositionClosed(
+function formatPrice(price: number): string {
+  return price.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+async function sendToSubs(
   redis: RedisCoordinator,
   log: Logger,
   address: string,
-  coin: string,
-  side: PositionSide,
-  size: number,
-  exitPrice: number,
-  pnl: number,
+  payload: string,
 ): Promise<void> {
   if (!configured) return;
 
   const subs = await redis.getPushSubs(address);
   const endpoints = Object.entries(subs);
   if (endpoints.length === 0) return;
-
-  const priceFmt = exitPrice.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  const pnlFmt = `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-
-  const payload = JSON.stringify({
-    title: `${side.toUpperCase()} CLOSED`,
-    body: `${size} ${coin} @ $${priceFmt} (${pnlFmt})`,
-    url: "/",
-    tag: `${address}:${coin}:close`,
-  });
 
   await Promise.all(
     endpoints.map(async ([endpoint, json]) => {
@@ -71,4 +61,62 @@ export async function notifyPositionClosed(
       }
     }),
   );
+}
+
+export async function notifyPositionOpened(
+  redis: RedisCoordinator,
+  log: Logger,
+  address: string,
+  coin: string,
+  side: PositionSide,
+  size: number,
+  entryPx: number,
+): Promise<void> {
+  const payload = JSON.stringify({
+    title: `${side.toUpperCase()} OPENED`,
+    body: `${size} ${coin} @ $${formatPrice(entryPx)}`,
+    url: "/",
+    tag: `${address}:${coin}:open`,
+  });
+  await sendToSubs(redis, log, address, payload);
+}
+
+export async function notifyPositionModified(
+  redis: RedisCoordinator,
+  log: Logger,
+  address: string,
+  coin: string,
+  side: PositionSide,
+  previousSize: number,
+  size: number,
+  entryPx: number,
+): Promise<void> {
+  const payload = JSON.stringify({
+    title: `${side.toUpperCase()} MODIFIED`,
+    body: `${previousSize} -> ${size} ${coin} @ $${formatPrice(entryPx)}`,
+    url: "/",
+    tag: `${address}:${coin}:modify`,
+  });
+  await sendToSubs(redis, log, address, payload);
+}
+
+export async function notifyPositionClosed(
+  redis: RedisCoordinator,
+  log: Logger,
+  address: string,
+  coin: string,
+  side: PositionSide,
+  size: number,
+  exitPrice: number,
+  pnl: number,
+): Promise<void> {
+  const pnlFmt = `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+  const payload = JSON.stringify({
+    title: `${side.toUpperCase()} CLOSED`,
+    body: `${size} ${coin} @ $${formatPrice(exitPrice)} (${pnlFmt})`,
+    url: "/",
+    tag: `${address}:${coin}:close`,
+  });
+  await sendToSubs(redis, log, address, payload);
 }

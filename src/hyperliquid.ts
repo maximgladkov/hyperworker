@@ -23,12 +23,16 @@ export interface RestingStop {
   size: number;
 }
 
-export interface MarketOrderResult {
+export interface OrderResult {
   status: "filled" | "resting";
   oid: number;
   filledSz: number;
   avgPx?: number;
 }
+
+export type OrderPricing =
+  | { kind: "market"; midPrice: number; maxSlippage: number }
+  | { kind: "limit"; limitPx: number };
 
 export function roundSz(value: number, szDecimals: number): number {
   const factor = 10 ** szDecimals;
@@ -196,14 +200,13 @@ export class HyperliquidClient {
     throw new Error(`Order placement did not result in a resting order: ${JSON.stringify(status)}`);
   }
 
-  async placeMarketOrder(
+  async placeOrder(
     tenant: Tenant,
     isBuy: boolean,
     size: number,
     reduceOnly: boolean,
-    midPrice: number,
-    maxSlippage: number,
-  ): Promise<MarketOrderResult> {
+    pricing: OrderPricing,
+  ): Promise<OrderResult> {
     const { assetIndex, szDecimals } = await this.getAssetMeta();
     const exchange = this.exchangeFor(tenant);
     const sz = roundSz(size, szDecimals);
@@ -211,7 +214,17 @@ export class HyperliquidClient {
       throw new Error(`Order size rounds to zero at ${szDecimals} decimals: ${size}`);
     }
 
-    const rawPx = isBuy ? midPrice * (1 + maxSlippage) : midPrice * (1 - maxSlippage);
+    let rawPx: number;
+    let tif: "Ioc" | "Gtc";
+    if (pricing.kind === "limit") {
+      rawPx = pricing.limitPx;
+      tif = "Gtc";
+    } else {
+      rawPx = isBuy
+        ? pricing.midPrice * (1 + pricing.maxSlippage)
+        : pricing.midPrice * (1 - pricing.maxSlippage);
+      tif = "Ioc";
+    }
     const px = roundPx(rawPx, szDecimals);
 
     const result = await exchange.order({
@@ -222,7 +235,7 @@ export class HyperliquidClient {
           p: String(px),
           s: String(sz),
           r: reduceOnly,
-          t: { limit: { tif: "Ioc" } },
+          t: { limit: { tif } },
         },
       ],
       grouping: "na",
@@ -230,10 +243,10 @@ export class HyperliquidClient {
 
     const status = result.response.data.statuses[0];
     if (!status || typeof status !== "object") {
-      throw new Error(`Unexpected market order response: ${JSON.stringify(result)}`);
+      throw new Error(`Unexpected order response: ${JSON.stringify(result)}`);
     }
     if ("error" in status) {
-      throw new Error(`Market order failed: ${status.error}`);
+      throw new Error(`Order failed: ${status.error}`);
     }
     if ("filled" in status) {
       return {
@@ -246,7 +259,7 @@ export class HyperliquidClient {
     if ("resting" in status) {
       return { status: "resting", oid: status.resting.oid, filledSz: 0 };
     }
-    throw new Error(`Market order returned an unrecognized status: ${JSON.stringify(status)}`);
+    throw new Error(`Order returned an unrecognized status: ${JSON.stringify(status)}`);
   }
 
   async modifyStop(

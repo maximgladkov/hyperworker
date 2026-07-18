@@ -2,7 +2,7 @@ import { isValidTrail, type Tenant, type TrailConfig } from "./config.js";
 import { HyperliquidClient, type Position, type RestingStop } from "./hyperliquid.js";
 import { tenantLogger, type Logger } from "./logger.js";
 import { alertError, alertPositionClosed, alertPositionOpened, alertStopMoved } from "./notify.js";
-import { notifyPositionClosed } from "./push.js";
+import { notifyPositionClosed, notifyPositionModified, notifyPositionOpened } from "./push.js";
 import { RedisCoordinator } from "./redis.js";
 import type { TenantState } from "./state.js";
 import { candidateStop, isTighter } from "./trail.js";
@@ -11,6 +11,10 @@ const SIZE_DRIFT_EPSILON = 1e-8;
 
 function sizeDrifted(current: number, actual: number): boolean {
   return Math.abs(current - actual) > SIZE_DRIFT_EPSILON;
+}
+
+function positionModified(previous: Position, current: Position): boolean {
+  return previous.side !== current.side || sizeDrifted(previous.size, current.size);
 }
 
 function estimatePnl(position: Position, exitPrice: number): number {
@@ -160,8 +164,30 @@ export class TenantEngine {
     trail: TrailConfig,
     enabled: boolean,
   ): Promise<void> {
-    if (!this.hadPosition) {
+    const opened = !this.hadPosition;
+    const previous = this.lastPosition;
+    if (opened) {
       alertPositionOpened(this.log, position.side, position.size);
+      await notifyPositionOpened(
+        this.redis,
+        this.log,
+        this.tenant.address,
+        this.coin,
+        position.side,
+        position.size,
+        position.entryPx,
+      );
+    } else if (previous && positionModified(previous, position)) {
+      await notifyPositionModified(
+        this.redis,
+        this.log,
+        this.tenant.address,
+        this.coin,
+        position.side,
+        previous.size,
+        position.size,
+        position.entryPx,
+      );
     }
     this.hadPosition = true;
     this.lastPosition = position;

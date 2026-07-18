@@ -1,5 +1,5 @@
 import type { Tenant } from "./config.js";
-import type { HyperliquidClient, MarketOrderResult } from "./hyperliquid.js";
+import type { HyperliquidClient, OrderResult } from "./hyperliquid.js";
 import { logger } from "./logger.js";
 
 export type OrderSide = "buy" | "sell";
@@ -8,12 +8,13 @@ export interface PlaceOrderRequest {
   side: OrderSide;
   size: number;
   reduceOnly?: boolean;
+  price?: number;
 }
 
 export interface CloseResult {
   closed: boolean;
   reason?: string;
-  order?: MarketOrderResult;
+  order?: OrderResult;
 }
 
 class Mutex {
@@ -61,27 +62,38 @@ export class TradeService {
     return { tenant, lock };
   }
 
-  async placeOrder(address: string, request: PlaceOrderRequest): Promise<MarketOrderResult> {
+  async placeOrder(address: string, request: PlaceOrderRequest): Promise<OrderResult> {
     const { tenant, lock } = this.resolve(address);
     const reduceOnly = request.reduceOnly ?? false;
     const isBuy = request.side === "buy";
 
     return lock.run(async () => {
-      const price = await this.hl.getMidPrice();
       const log = logger.child({ address: tenant.address });
+
+      if (request.price !== undefined) {
+        log.warn(
+          { side: request.side, size: request.size, reduceOnly, limitPx: request.price },
+          "manual limit order requested",
+        );
+        const result = await this.hl.placeOrder(tenant, isBuy, request.size, reduceOnly, {
+          kind: "limit",
+          limitPx: request.price,
+        });
+        log.warn({ result }, "manual limit order submitted");
+        return result;
+      }
+
+      const midPrice = await this.hl.getMidPrice();
       log.warn(
-        { side: request.side, size: request.size, reduceOnly, price },
-        "manual order requested",
+        { side: request.side, size: request.size, reduceOnly, midPrice },
+        "manual market order requested",
       );
-      const result = await this.hl.placeMarketOrder(
-        tenant,
-        isBuy,
-        request.size,
-        reduceOnly,
-        price,
-        this.maxSlippage,
-      );
-      log.warn({ result }, "manual order submitted");
+      const result = await this.hl.placeOrder(tenant, isBuy, request.size, reduceOnly, {
+        kind: "market",
+        midPrice,
+        maxSlippage: this.maxSlippage,
+      });
+      log.warn({ result }, "manual market order submitted");
       return result;
     });
   }
@@ -95,18 +107,15 @@ export class TradeService {
         return { closed: false, reason: "no open position" };
       }
 
-      const price = await this.hl.getMidPrice();
+      const midPrice = await this.hl.getMidPrice();
       const isBuy = position.side === "short";
       const log = logger.child({ address: tenant.address });
-      log.warn({ position, price }, "manual close requested");
-      const order = await this.hl.placeMarketOrder(
-        tenant,
-        isBuy,
-        position.size,
-        true,
-        price,
-        this.maxSlippage,
-      );
+      log.warn({ position, midPrice }, "manual close requested");
+      const order = await this.hl.placeOrder(tenant, isBuy, position.size, true, {
+        kind: "market",
+        midPrice,
+        maxSlippage: this.maxSlippage,
+      });
       log.warn({ order }, "manual close submitted");
       return { closed: true, order };
     });

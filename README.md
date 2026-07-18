@@ -126,38 +126,48 @@ picked up and protected by a trailing stop on the **next poll** (within
 window until that first stop is placed.
 
 The API listens on `PORT` (Railway injects this automatically; defaults to
-`8080` locally). Orders are placed as IOC ("market") orders, priced
-`MARKET_MAX_SLIPPAGE` through the mid so they cross the book and fill
-immediately. Per-tenant requests are serialized so a manual order can't
-interleave mid-flight with the engine's stop `modify`.
+`8080` locally). An order with **no `price`** is placed as an IOC ("market")
+order, priced `MARKET_MAX_SLIPPAGE` through the mid so it crosses the book and
+fills immediately. An order **with a `price`** is placed as a resting GTC limit
+order at exactly that price, which stays on the book until it fills or is
+canceled (it only opens a position — and thus only gets a trailing stop — once
+filled). Per-tenant requests are serialized so a manual order can't interleave
+mid-flight with the engine's stop `modify`.
 
 ### Endpoints
 
 | Method | Path                             | Body                                             | Effect                                                            |
 | ------ | -------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
 | `GET`  | `/health`                        | —                                                | Liveness check (no auth).                                         |
-| `POST` | `/api/tenants/:address/order`    | `{ "side": "buy"\|"sell", "size": <coin units>, "reduceOnly": <bool?> }` | Market order. `reduceOnly:false` opens/adds; `reduceOnly:true` reduces. |
-| `POST` | `/api/tenants/:address/close`    | —                                                | Flattens the tenant's open position (full-size reduce-only).      |
+| `POST` | `/api/tenants/:address/order`    | `{ "side": "buy"\|"sell", "size": <coin units>, "price": <number?>, "reduceOnly": <bool?> }` | `price` set → resting GTC limit at that price; `price` empty → market IOC at the live mid. `reduceOnly:false` opens/adds; `reduceOnly:true` reduces. |
+| `POST` | `/api/tenants/:address/close`    | —                                                | Flattens the tenant's open position (full-size reduce-only market). |
 
 `:address` is the tenant's **master account address** (as configured in
 `HL_ACCOUNT_ADDRESS_{N}`); the engine maps it to that tenant's stored agent
 wallet to sign. `size` is in coin units (e.g. `0.01` BTC). `side` chooses
-direction: `buy` = long, `sell` = short.
+direction: `buy` = long, `sell` = short. `price` is optional — omit it (or send
+`null`/`""`) to trade at the current market price, or set it for a limit order.
 
 ```bash
-# Open a 0.01 BTC long on the tenant
+# Market buy: 0.01 BTC long at the current price (no price field)
 curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
   -H 'authorization: Bearer <API_AUTH_TOKEN>' \
   -H 'content-type: application/json' \
   -d '{"side":"buy","size":0.01}'
 
-# Open a 0.01 BTC short
+# Limit buy: 0.01 BTC long resting at $95,000
+curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"side":"buy","size":0.01,"price":95000}'
+
+# Market short: 0.01 BTC at the current price
 curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
   -H 'authorization: Bearer <API_AUTH_TOKEN>' \
   -H 'content-type: application/json' \
   -d '{"side":"sell","size":0.01}'
 
-# Flatten the position
+# Flatten the position (always market)
 curl -X POST http://localhost:8080/api/tenants/0xabc.../close \
   -H 'authorization: Bearer <API_AUTH_TOKEN>'
 ```
@@ -297,9 +307,10 @@ protection must survive restarts and deploys.
 - Alerts (warn/error level logs) fire on: a stop being moved, any error, and
   position-opened / position-closed transitions.
 
-## Push notifications on position close
+## Push notifications on position changes
 
-When a tenant's position transitions from open to flat, Hyperworker sends a
+When a tenant's position is opened, modified (its size or side changes while
+it stays open), or closed, Hyperworker sends a
 [web-push](https://www.npmjs.com/package/web-push) notification directly to
 every browser that subscribed via the companion dashboard PWA — no HTTP call
 back into the dashboard is involved.
@@ -309,14 +320,19 @@ back into the dashboard is involved.
   subscription `endpoint` URL and the value is the `JSON.stringify`'d
   subscription (`{ endpoint, keys: { p256dh, auth } }`). Hyperworker only reads
   and prunes this hash; the dashboard owns writes.
-- **Trigger:** the close is detected in the same state loop that emits the
-  `position_closed` alert. PnL is estimated from the last-known position
-  (`entryPx`, `size`, `side`) against the current mid price at the moment the
-  close is observed, so it is an approximation of realized PnL, not the exact
-  fill.
+- **Triggers:** all three transitions are detected in the same state loop that
+  emits the matching `position_opened` / `position_closed` alerts:
+  - **Opened** — a tenant goes from flat to holding a position.
+  - **Modified** — an already-open position's size (or side) changes between
+    polls, e.g. when adding to or partially reducing a position.
+  - **Closed** — the position transitions from open to flat. PnL is estimated
+    from the last-known position (`entryPx`, `size`, `side`) against the
+    current mid price at the moment the close is observed, so it is an
+    approximation of realized PnL, not the exact fill.
 - **Payload:** matches what the dashboard's service worker expects —
-  `{ title, body, url, tag }`. `tag` is `"<address>:<coin>:close"` so repeated
-  notifications for the same event collapse into one on supported platforms.
+  `{ title, body, url, tag }`. `tag` is `"<address>:<coin>:open"`,
+  `"<address>:<coin>:modify"`, or `"<address>:<coin>:close"` so repeated
+  notifications of the same kind collapse into one on supported platforms.
 - **Stale-subscription cleanup:** if a send fails with `404`/`410` the
   subscription is gone/expired and is `HDEL`'d from the hash; other failures
   are logged and the endpoint is left in place.
