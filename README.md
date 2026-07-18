@@ -114,6 +114,64 @@ price-driven trailing: once a reconfigured stop is in place, ordinary trailing
 resumes and only ever tightens from there. If you change the value while flat,
 it simply takes effect when the next position opens.
 
+## Trading API
+
+Besides trailing, the same process exposes a small HTTP API so a frontend can
+**open and close positions on demand** (e.g. buy/sell buttons). It runs inside
+the singleton engine — not a separate service — so it reuses each tenant's
+already-loaded agent wallet and never duplicates private keys. Because
+Hyperliquid is the source of truth, any position opened through the API is
+picked up and protected by a trailing stop on the **next poll** (within
+`POLL_MS`), exactly like a position opened by hand; there is a brief unprotected
+window until that first stop is placed.
+
+The API listens on `PORT` (Railway injects this automatically; defaults to
+`8080` locally). Orders are placed as IOC ("market") orders, priced
+`MARKET_MAX_SLIPPAGE` through the mid so they cross the book and fill
+immediately. Per-tenant requests are serialized so a manual order can't
+interleave mid-flight with the engine's stop `modify`.
+
+### Endpoints
+
+| Method | Path                             | Body                                             | Effect                                                            |
+| ------ | -------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
+| `GET`  | `/health`                        | —                                                | Liveness check (no auth).                                         |
+| `POST` | `/api/tenants/:address/order`    | `{ "side": "buy"\|"sell", "size": <coin units>, "reduceOnly": <bool?> }` | Market order. `reduceOnly:false` opens/adds; `reduceOnly:true` reduces. |
+| `POST` | `/api/tenants/:address/close`    | —                                                | Flattens the tenant's open position (full-size reduce-only).      |
+
+`:address` is the tenant's **master account address** (as configured in
+`HL_ACCOUNT_ADDRESS_{N}`); the engine maps it to that tenant's stored agent
+wallet to sign. `size` is in coin units (e.g. `0.01` BTC). `side` chooses
+direction: `buy` = long, `sell` = short.
+
+```bash
+# Open a 0.01 BTC long on the tenant
+curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"side":"buy","size":0.01}'
+
+# Open a 0.01 BTC short
+curl -X POST http://localhost:8080/api/tenants/0xabc.../order \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"side":"sell","size":0.01}'
+
+# Flatten the position
+curl -X POST http://localhost:8080/api/tenants/0xabc.../close \
+  -H 'authorization: Bearer <API_AUTH_TOKEN>'
+```
+
+### Authentication and CORS
+
+The trading API moves real money and is publicly reachable on Railway, and
+master account addresses are public on-chain — so the address alone is **not** a
+secret. Set `API_AUTH_TOKEN` to require an `Authorization: Bearer <token>`
+header on every `/api/*` request. If it is left unset the API runs
+**unauthenticated** and logs a warning at startup; only do that on testnet.
+Set `CORS_ORIGIN` to your frontend's exact origin in production (defaults to
+`*`).
+
 ## Agent wallet setup (safety model)
 
 Hyperworker signs every exchange action with a Hyperliquid **API/agent
@@ -239,6 +297,43 @@ protection must survive restarts and deploys.
 - Alerts (warn/error level logs) fire on: a stop being moved, any error, and
   position-opened / position-closed transitions.
 
+## Push notifications on position close
+
+When a tenant's position transitions from open to flat, Hyperworker sends a
+[web-push](https://www.npmjs.com/package/web-push) notification directly to
+every browser that subscribed via the companion dashboard PWA — no HTTP call
+back into the dashboard is involved.
+
+- **Subscription source:** the dashboard writes each browser's subscription to
+  a Redis hash at `push:subs:<address>` (address lowercased). The field is the
+  subscription `endpoint` URL and the value is the `JSON.stringify`'d
+  subscription (`{ endpoint, keys: { p256dh, auth } }`). Hyperworker only reads
+  and prunes this hash; the dashboard owns writes.
+- **Trigger:** the close is detected in the same state loop that emits the
+  `position_closed` alert. PnL is estimated from the last-known position
+  (`entryPx`, `size`, `side`) against the current mid price at the moment the
+  close is observed, so it is an approximation of realized PnL, not the exact
+  fill.
+- **Payload:** matches what the dashboard's service worker expects —
+  `{ title, body, url, tag }`. `tag` is `"<address>:<coin>:close"` so repeated
+  notifications for the same event collapse into one on supported platforms.
+- **Stale-subscription cleanup:** if a send fails with `404`/`410` the
+  subscription is gone/expired and is `HDEL`'d from the hash; other failures
+  are logged and the endpoint is left in place.
+
+Configure the VAPID keys to enable it (see [`.env.example`](.env.example)):
+
+```
+VAPID_PUBLIC_KEY=<same key as dashboard's NEXT_PUBLIC_VAPID_PUBLIC_KEY>
+VAPID_PRIVATE_KEY=<private key, worker-only>
+VAPID_SUBJECT=mailto:you@example.com
+```
+
+Generate a keypair once with `npx web-push generate-vapid-keys`. The public key
+**must match** the dashboard's `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, since browsers
+subscribed using that key. If any of the three variables is unset, push is
+disabled (logged once at startup) and the rest of the engine runs unchanged.
+
 ## Local development
 
 ```bash
@@ -259,6 +354,12 @@ npm run dev
    (`numReplicas: 1`).
 3. Set all environment variables from `.env.example` on this app's service,
    pointing `REDIS_URL` at the Redis service via a variable reference (e.g.
-   `REDIS_URL=${{Redis.REDIS_URL}}`).
+   `REDIS_URL=${{Redis.REDIS_URL}}`). Set `API_AUTH_TOKEN` to a long random
+   string and `CORS_ORIGIN` to your frontend's origin.
 4. Deploy. Confirm in the logs that reconciliation ran successfully for
    every tenant before considering the deploy healthy.
+5. To let the frontend reach the [Trading API](#trading-api), generate a public
+   domain for this service (Settings → Networking → Generate Domain). Railway
+   sets `PORT` automatically and routes the domain to it — do not hard-code
+   `PORT`. Because the singleton lock means only the live instance ever serves,
+   there is no risk of a second replica answering trade requests.

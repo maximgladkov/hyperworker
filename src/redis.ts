@@ -9,6 +9,7 @@ const LOCK_TTL_MS = 30_000;
 const TENANTS_KEY = "bot:tenants";
 const UPDATES_CHANNEL = "bot:updates";
 const CONFIG_KEY_PREFIX = "bot:config:";
+const PUSH_SUBS_KEY_PREFIX = "push:subs:";
 
 function fingerprint(state: TenantState): string {
   const { updatedAt: _updatedAt, ...rest } = state;
@@ -49,6 +50,14 @@ export class RedisCoordinator {
   async getTenantConfig(address: string): Promise<TrailOverride> {
     const raw = await this.redis.hgetall(`${CONFIG_KEY_PREFIX}${address}`);
     return parseTrailOverride(raw);
+  }
+
+  async getPushSubs(address: string): Promise<Record<string, string>> {
+    return this.redis.hgetall(`${PUSH_SUBS_KEY_PREFIX}${address}`);
+  }
+
+  async deletePushSub(address: string, endpoint: string): Promise<void> {
+    await this.redis.hdel(`${PUSH_SUBS_KEY_PREFIX}${address}`, endpoint);
   }
 
   async publishState(state: TenantState): Promise<void> {

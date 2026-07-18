@@ -23,6 +23,13 @@ export interface RestingStop {
   size: number;
 }
 
+export interface MarketOrderResult {
+  status: "filled" | "resting";
+  oid: number;
+  filledSz: number;
+  avgPx?: number;
+}
+
 export function roundSz(value: number, szDecimals: number): number {
   const factor = 10 ** szDecimals;
   return Math.round(value * factor) / factor;
@@ -187,6 +194,59 @@ export class HyperliquidClient {
       return status.filled.oid;
     }
     throw new Error(`Order placement did not result in a resting order: ${JSON.stringify(status)}`);
+  }
+
+  async placeMarketOrder(
+    tenant: Tenant,
+    isBuy: boolean,
+    size: number,
+    reduceOnly: boolean,
+    midPrice: number,
+    maxSlippage: number,
+  ): Promise<MarketOrderResult> {
+    const { assetIndex, szDecimals } = await this.getAssetMeta();
+    const exchange = this.exchangeFor(tenant);
+    const sz = roundSz(size, szDecimals);
+    if (sz <= 0) {
+      throw new Error(`Order size rounds to zero at ${szDecimals} decimals: ${size}`);
+    }
+
+    const rawPx = isBuy ? midPrice * (1 + maxSlippage) : midPrice * (1 - maxSlippage);
+    const px = roundPx(rawPx, szDecimals);
+
+    const result = await exchange.order({
+      orders: [
+        {
+          a: assetIndex,
+          b: isBuy,
+          p: String(px),
+          s: String(sz),
+          r: reduceOnly,
+          t: { limit: { tif: "Ioc" } },
+        },
+      ],
+      grouping: "na",
+    });
+
+    const status = result.response.data.statuses[0];
+    if (!status || typeof status !== "object") {
+      throw new Error(`Unexpected market order response: ${JSON.stringify(result)}`);
+    }
+    if ("error" in status) {
+      throw new Error(`Market order failed: ${status.error}`);
+    }
+    if ("filled" in status) {
+      return {
+        status: "filled",
+        oid: status.filled.oid,
+        filledSz: Number(status.filled.totalSz),
+        avgPx: Number(status.filled.avgPx),
+      };
+    }
+    if ("resting" in status) {
+      return { status: "resting", oid: status.resting.oid, filledSz: 0 };
+    }
+    throw new Error(`Market order returned an unrecognized status: ${JSON.stringify(status)}`);
   }
 
   async modifyStop(

@@ -2,6 +2,7 @@ import { isValidTrail, type Tenant, type TrailConfig } from "./config.js";
 import { HyperliquidClient, type Position, type RestingStop } from "./hyperliquid.js";
 import { tenantLogger, type Logger } from "./logger.js";
 import { alertError, alertPositionClosed, alertPositionOpened, alertStopMoved } from "./notify.js";
+import { notifyPositionClosed } from "./push.js";
 import { RedisCoordinator } from "./redis.js";
 import type { TenantState } from "./state.js";
 import { candidateStop, isTighter } from "./trail.js";
@@ -12,6 +13,11 @@ function sizeDrifted(current: number, actual: number): boolean {
   return Math.abs(current - actual) > SIZE_DRIFT_EPSILON;
 }
 
+function estimatePnl(position: Position, exitPrice: number): number {
+  const diff = position.side === "long" ? exitPrice - position.entryPx : position.entryPx - exitPrice;
+  return diff * position.size;
+}
+
 function trailChanged(a: TrailConfig | undefined, b: TrailConfig): boolean {
   return a !== undefined && (a.type !== b.type || a.value !== b.value);
 }
@@ -19,6 +25,7 @@ function trailChanged(a: TrailConfig | undefined, b: TrailConfig): boolean {
 export class TenantEngine {
   private readonly log: Logger;
   private hadPosition = false;
+  private lastPosition: Position | null = null;
   private lastTrail: TrailConfig | undefined;
 
   constructor(
@@ -57,6 +64,7 @@ export class TenantEngine {
   async reconcile(): Promise<void> {
     const position = await this.hl.getPosition(this.tenant.address);
     this.hadPosition = position !== null;
+    this.lastPosition = position;
 
     if (!position) {
       const stray = await this.hl.getAnyRestingStop(this.tenant.address);
@@ -124,8 +132,14 @@ export class TenantEngine {
 
     if (this.hadPosition) {
       alertPositionClosed(this.log);
+      const closed = this.lastPosition;
+      if (closed) {
+        const pnl = estimatePnl(closed, price);
+        await notifyPositionClosed(this.redis, this.log, this.tenant.address, this.coin, closed.side, pnl);
+      }
     }
     this.hadPosition = false;
+    this.lastPosition = null;
     this.lastTrail = undefined;
 
     await this.publish(price, null, null, lastAction, trail, enabled);
@@ -141,6 +155,7 @@ export class TenantEngine {
       alertPositionOpened(this.log, position.side, position.size);
     }
     this.hadPosition = true;
+    this.lastPosition = position;
 
     if (!enabled) {
       let lastAction = "holding: trail disabled";

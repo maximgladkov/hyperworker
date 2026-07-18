@@ -26,6 +26,10 @@ export interface AppConfig {
   redisUrl: string;
   healthcheckUrl: string | undefined;
   tenants: Tenant[];
+  port: number;
+  apiAuthToken: string | undefined;
+  corsOrigin: string;
+  marketMaxSlippage: number;
 }
 
 const addressSchema = z
@@ -178,5 +182,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const tenants = parseTenants(env);
 
-  return { coin, hlBase, pollMs, redisUrl, healthcheckUrl, tenants };
+  const portRaw = env.PORT ?? "8080";
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`PORT must be an integer between 1 and 65535, got: ${portRaw}`);
+  }
+
+  const apiAuthToken = env.API_AUTH_TOKEN?.trim() || undefined;
+  const corsOrigin = env.CORS_ORIGIN?.trim() || "*";
+
+  const slippageRaw = env.MARKET_MAX_SLIPPAGE ?? "0.05";
+  const marketMaxSlippage = Number(slippageRaw);
+  if (!Number.isFinite(marketMaxSlippage) || marketMaxSlippage <= 0 || marketMaxSlippage >= 1) {
+    throw new Error(`MARKET_MAX_SLIPPAGE must be a fraction between 0 and 1 (e.g. 0.05 = 5%), got: ${slippageRaw}`);
+  }
+
+  return {
+    coin,
+    hlBase,
+    pollMs,
+    redisUrl,
+    healthcheckUrl,
+    tenants,
+    port,
+    apiAuthToken,
+    corsOrigin,
+    marketMaxSlippage,
+  };
 }

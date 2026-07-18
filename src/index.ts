@@ -3,7 +3,10 @@ import { TenantEngine } from "./engine.js";
 import { pingHealthcheck } from "./health.js";
 import { HyperliquidClient } from "./hyperliquid.js";
 import { logger } from "./logger.js";
+import { initPush } from "./push.js";
 import { RedisCoordinator } from "./redis.js";
+import { startServer } from "./server.js";
+import { TradeService } from "./trade.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -14,6 +17,8 @@ async function main(): Promise<void> {
   if (!config.healthcheckUrl) {
     logger.warn("HEALTHCHECK_URL not set; skipping dead-man's switch heartbeat");
   }
+
+  initPush();
 
   const hl = new HyperliquidClient(config.hlBase, config.coin);
   const redis = new RedisCoordinator(config);
@@ -32,6 +37,9 @@ async function main(): Promise<void> {
     await engine.reconcile();
   }
   logger.info({ tenantCount: engines.length }, "startup reconciliation complete");
+
+  const trade = new TradeService(hl, config.tenants, config.marketMaxSlippage);
+  const server = startServer(config, trade);
 
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
@@ -87,6 +95,7 @@ async function main(): Promise<void> {
     stopped = true;
     logger.info({ signal }, "received shutdown signal, finishing in-flight loop iteration");
     if (timer) clearTimeout(timer);
+    server.close();
     await currentIteration.catch(() => {});
     await redis.releaseLock();
     await redis.close();
