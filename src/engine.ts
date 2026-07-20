@@ -109,14 +109,14 @@ export class TenantEngine {
     this.log.warn({ orderId, triggerPx: stopPx }, "startup: created missing stop-loss for open position");
   }
 
-  async run(price: number): Promise<void> {
+  async run(price: number, options: { resetStop?: boolean } = {}): Promise<void> {
     try {
       const position = await this.hl.getPosition(this.tenant.address);
       const { trail, enabled } = await this.resolveTrail();
       if (!position) {
         await this.runFlat(price, trail, enabled);
       } else {
-        await this.runOpen(price, position, trail, enabled);
+        await this.runOpen(price, position, trail, enabled, options.resetStop === true);
       }
     } catch (error) {
       alertError(this.log, error);
@@ -163,6 +163,7 @@ export class TenantEngine {
     position: Position,
     trail: TrailConfig,
     enabled: boolean,
+    resetStop: boolean,
   ): Promise<void> {
     const opened = !this.hadPosition;
     const previous = this.lastPosition;
@@ -215,6 +216,16 @@ export class TenantEngine {
       lastAction = `created stop at ${candidate}`;
       this.log.warn({ orderId, triggerPx: candidate }, lastAction);
       resting = { orderId, triggerPx: candidate, size: position.size };
+    } else if (resetStop) {
+      const from = resting.triggerPx;
+      if (from !== candidate || sizeDrifted(resting.size, position.size)) {
+        await this.hl.modifyStop(this.tenant, position.side, resting.orderId, position.size, candidate);
+        lastAction = `reset stop ${from} -> ${candidate}`;
+        if (from !== candidate) {
+          alertStopMoved(this.log, from, candidate);
+        }
+        resting = { orderId: resting.orderId, triggerPx: candidate, size: position.size };
+      }
     } else {
       if (sizeDrifted(resting.size, position.size)) {
         await this.hl.modifyStop(this.tenant, position.side, resting.orderId, position.size, resting.triggerPx);

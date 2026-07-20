@@ -1,4 +1,5 @@
 import type { Tenant } from "./config.js";
+import type { TenantEngine } from "./engine.js";
 import type { HyperliquidClient, OpenOrder, OrderResult } from "./hyperliquid.js";
 import { logger } from "./logger.js";
 
@@ -45,30 +46,41 @@ export class UnknownTenantError extends Error {
 export class TradeService {
   private readonly tenants = new Map<string, Tenant>();
   private readonly locks = new Map<string, Mutex>();
+  private readonly engines = new Map<string, TenantEngine>();
 
   constructor(
     private readonly hl: HyperliquidClient,
     tenants: Tenant[],
+    engines: TenantEngine[],
     private readonly maxSlippage: number,
   ) {
-    for (const tenant of tenants) {
+    for (let i = 0; i < tenants.length; i++) {
+      const tenant = tenants[i]!;
+      const engine = engines[i]!;
       this.tenants.set(tenant.address, tenant);
       this.locks.set(tenant.address, new Mutex());
+      this.engines.set(tenant.address, engine);
     }
   }
 
-  private resolve(address: string): { tenant: Tenant; lock: Mutex } {
+  private resolve(address: string): { tenant: Tenant; lock: Mutex; engine: TenantEngine } {
     const key = address.toLowerCase();
     const tenant = this.tenants.get(key);
     const lock = this.locks.get(key);
-    if (!tenant || !lock) {
+    const engine = this.engines.get(key);
+    if (!tenant || !lock || !engine) {
       throw new UnknownTenantError(address);
     }
-    return { tenant, lock };
+    return { tenant, lock, engine };
+  }
+
+  async runEngine(address: string, price: number): Promise<void> {
+    const { lock, engine } = this.resolve(address);
+    return lock.run(() => engine.run(price));
   }
 
   async placeOrder(address: string, request: PlaceOrderRequest): Promise<OrderResult> {
-    const { tenant, lock } = this.resolve(address);
+    const { tenant, lock, engine } = this.resolve(address);
     const reduceOnly = request.reduceOnly ?? false;
     const isBuy = request.side === "buy";
 
@@ -85,6 +97,10 @@ export class TradeService {
           limitPx: request.price,
         });
         log.warn({ result }, "manual limit order submitted");
+        if (result.status === "filled" && result.avgPx !== undefined) {
+          log.warn({ avgPx: result.avgPx }, "limit order filled; resetting trailing stop from fill price");
+          await engine.run(result.avgPx, { resetStop: true });
+        }
         return result;
       }
 

@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   }
   logger.info({ tenantCount: engines.length }, "startup reconciliation complete");
 
-  const trade = new TradeService(hl, config.tenants, config.marketMaxSlippage);
+  const trade = new TradeService(hl, config.tenants, engines, config.marketMaxSlippage);
   const server = startServer(config, trade);
 
   let stopped = false;
@@ -60,9 +60,9 @@ async function main(): Promise<void> {
 
       const price = await hl.getMidPrice();
 
-      for (const engine of engines) {
+      for (const tenant of config.tenants) {
         try {
-          await engine.run(price);
+          await trade.runEngine(tenant.address, price);
         } catch (error) {
           loopOk = false;
           logger.error(
