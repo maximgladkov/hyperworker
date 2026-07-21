@@ -98,8 +98,8 @@ export class TradeService {
         });
         log.warn({ result }, "manual limit order submitted");
         if (result.status === "filled" && result.avgPx !== undefined) {
-          log.warn({ avgPx: result.avgPx }, "limit order filled; resetting trailing stop from fill price");
-          await engine.run(result.avgPx, { resetStop: true });
+          log.warn({ avgPx: result.avgPx }, "order filled; resetting trailing stop from fill price");
+          await engine.run(result.avgPx);
         }
         return result;
       }
@@ -115,6 +115,10 @@ export class TradeService {
         maxSlippage: this.maxSlippage,
       });
       log.warn({ result }, "manual market order submitted");
+      if (result.status === "filled" && result.avgPx !== undefined) {
+        log.warn({ avgPx: result.avgPx }, "order filled; resetting trailing stop from fill price");
+        await engine.run(result.avgPx);
+      }
       return result;
     });
   }

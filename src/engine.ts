@@ -109,14 +109,14 @@ export class TenantEngine {
     this.log.warn({ orderId, triggerPx: stopPx }, "startup: created missing stop-loss for open position");
   }
 
-  async run(price: number, options: { resetStop?: boolean } = {}): Promise<void> {
+  async run(price: number): Promise<void> {
     try {
       const position = await this.hl.getPosition(this.tenant.address);
       const { trail, enabled } = await this.resolveTrail();
       if (!position) {
         await this.runFlat(price, trail, enabled);
       } else {
-        await this.runOpen(price, position, trail, enabled, options.resetStop === true);
+        await this.runOpen(price, position, trail, enabled);
       }
     } catch (error) {
       alertError(this.log, error);
@@ -163,10 +163,10 @@ export class TenantEngine {
     position: Position,
     trail: TrailConfig,
     enabled: boolean,
-    resetStop: boolean,
   ): Promise<void> {
     const opened = !this.hadPosition;
     const previous = this.lastPosition;
+    const modified = previous !== null && positionModified(previous, position);
     if (opened) {
       alertPositionOpened(this.log, position.side, position.size);
       await notifyPositionOpened(
@@ -178,7 +178,7 @@ export class TenantEngine {
         position.size,
         position.entryPx,
       );
-    } else if (previous && positionModified(previous, position)) {
+    } else if (modified) {
       await notifyPositionModified(
         this.redis,
         this.log,
@@ -208,6 +208,7 @@ export class TenantEngine {
 
     const candidate = candidateStop(position.side, price, trail);
     const reconfigured = trailChanged(this.lastTrail, trail);
+    const resetStop = opened || modified;
     let resting = await this.hl.getRestingStop(this.tenant.address, position.side);
     let lastAction = "holding: stop unchanged";
 
